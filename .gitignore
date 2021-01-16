@@ -1,3 +1,8 @@
+__pycache__
+imagenet
+style_imagenet
+models
+capture_*
 *.pth
 *.t7
 output/*
