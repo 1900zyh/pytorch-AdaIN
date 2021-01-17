@@ -17,10 +17,10 @@ from torchvision.utils import save_image
 
 parser = argparse.ArgumentParser()
 # Basic options
-parser.add_argument('-i', '--id', type=int, required=True)
-parser.add_argument('-a', '--arch', type=str, required=True)
 parser.add_argument('-d', '--data', type=str, required=True)
-parser.add_argument('--batch_size', type=int, default=32)
+parser.add_argument('-i', '--id', type=int, required=True)
+# parser.add_argument('-a', '--arch', type=str, required=True)
+parser.add_argument('--batch_size', type=int, default=8)
 parser.add_argument('--workers', type=int, default=8)
 args = parser.parse_args()
 
@@ -114,24 +114,17 @@ class ImageNetDataset(Dataset):
         return img, label, img_name
 
 
-def main_worker(): 
+def main_worker(arch): 
     
     # set model
     torch.cuda.set_device(int(args.id))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"loading models from {args.arch}")
-    model = models.__dict__[args.arch](pretrained=True).cuda()
+    model = models.__dict__[arch](pretrained=True).cuda()
     model.eval()
 
     # set data 
     valdir = os.path.join(args.data, 'val')
     val_dataset = ImageNetDataset(args.data, "ILSVRC2012_validation_ground_truth.txt")
-    # for i, (img, label, name) in enumerate(val_dataset): 
-    #     print(label, name)
-    #     save_image(img, name)
-    #     if i > 10: 
-    #         break
-    # sys.exit()        
 
     val_loader = DataLoader(
         val_dataset, 
@@ -144,10 +137,10 @@ def main_worker():
     top1 = AverageMeter('Acc@1', ':6.2f')
     top5 = AverageMeter('Acc@5', ':6.2f')
     batch_time = AverageMeter('Time', ':6.3f')
-    progress = ProgressMeter(
-        len(val_dataset),
-        [batch_time, top1, top5],
-        prefix='Test: ')
+    # progress = ProgressMeter(
+    #     len(val_dataset),
+    #     [batch_time, top1, top5],
+    #     prefix='Test: ')
 
     # test 
     with torch.no_grad():
@@ -168,15 +161,23 @@ def main_worker():
             batch_time.update(time.time() - end)
             end = time.time()
 
-            if i % 500 == 0:
-                progress.display(i)
+            # if i % 500 == 0:
+            #     progress.display(i)
 
         # TODO: this should also be done with the ProgressMeter
-        print(
-            f"Test {args.arch} on {args.data}" 
-            " * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}".format(top1=top1, top5=top5)
-        )
+        return top1.avg, top5.avg
+        # print(
+        #     f"Test {args.arch} on {args.data}" 
+        #     " * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}".format(top1=top1, top5=top5)
+        # )
 
 
 if __name__ == "__main__": 
-    main_worker()
+    arch_list = [
+        "alexnet", "vgg16", 
+        "resnet18", "resnet50", "resnet101", "resnet152",
+        "densenet121", "densenet201",
+        "resnext50_32x4d", "resnext101_32x8d"]
+    for arch in arch_list: 
+        top1, top5 = main_worker(arch)
+        print(f"{args.data}-{arch}: Acc@1 {top1:.4f}  Acc@5 {top5:.4f}")
