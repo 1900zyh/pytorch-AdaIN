@@ -9,3 +9,5 @@ output/*
 .idea
 experiments/*
 logs/*
+debug*
+*.png

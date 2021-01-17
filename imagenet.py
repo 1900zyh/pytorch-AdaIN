@@ -4,6 +4,7 @@ from tqdm import tqdm
 import glob
 import os 
 import sys
+import math
 
 import torch
 import torch.nn as nn
@@ -94,14 +95,15 @@ def main_worker():
     # set up transformation 
     content_tf = test_transform(args.content_size, args.crop)
     style_tf = test_transform(args.style_size, args.crop)
-    f = open(f"capture_GPU{args.gpuid}.txt", "w")
 
+    f = open(f"capture_train_GPU{args.gpuid}.txt", "w")
     content_list = glob.glob(os.path.join(args.srcdir, "*/*"))
-    style_list = glob.glob(os.path.join(args.style))
+    
+    style_list = glob.glob(os.path.join(args.style, "*/*"))
     content_list.sort()
     style_list.sort()
-    
-    chunk = len(content_list) // 6 
+
+    chunk = math.ceil(len(content_list) / 7)
     start = max(0, args.gpuid*chunk)
     end = min((args.gpuid+1)*chunk, len(content_list))
 
@@ -121,7 +123,7 @@ def main_worker():
         #     save_image(output, str(output_name))
         try: 
             style_path = random.choice(style_list)
-            content = content_tf(Image.open(str(content_path)))
+            content = content_tf(Image.open(str(content_path)).convert("RGB"))
             style = style_tf(Image.open(str(style_path)))
             if args.preserve_color:
                 style = coral(style, content)
@@ -137,7 +139,7 @@ def main_worker():
 
             save_image(output, output_name)
         except: 
-            print(f"skip {img_path} ...")
+            print(f"skip {content_path} ...")
             f.write(content_path+"\n")
             f.flush()
     f.close()
