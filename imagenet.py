@@ -5,15 +5,75 @@ import glob
 import os 
 import sys
 import math
+from functools import partial 
+import multiprocessing
+from multiprocessing import Pool
 
 import torch
 import torch.nn as nn
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from torchvision import transforms
 from torchvision.utils import save_image
+from torch.utils.data import Dataset, DataLoader
 
 import net
 from function import adaptive_instance_normalization, coral
+
+
+# update maximal loading size for extreme high-resolution images
+Image.MAX_IMAGE_PIXELS = 10000000000000000000
+LARGE_ENOUGH_NUMBER = 100
+PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
+
+parser = argparse.ArgumentParser()
+# Basic options
+parser.add_argument('--srcdir', type=str, required=True)
+parser.add_argument('--gpuid', type=int, required=True)
+parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--alpha', type=float, default=0.5,
+                    help='The weight that controls the degree of \
+                             stylization. Should be between 0 and 1')
+parser.add_argument('--crop', action='store_true',
+                    help='do center crop to create squared image')
+
+# Additional options
+parser.add_argument('--style', type=str, default="../wikiart")
+parser.add_argument('--content_size', type=int, default=256,
+                    help='New (minimum) size for the content image, \
+                    keeping the original size if set to 0')
+parser.add_argument('--style_size', type=int, default=256,
+                    help='New (minimum) size for the style image, \
+                    keeping the original size if set to 0')
+parser.add_argument('--vgg', type=str, default='models/vgg_normalised.pth')
+parser.add_argument('--decoder', type=str, default='models/decoder.pth')
+
+# Advanced options
+parser.add_argument('--preserve_color', action='store_true',
+                    help='If specified, preserve color of the content image')
+parser.add_argument(
+    '--style_interpolation_weights', type=str, default='',
+    help='The weight for blending the style of multiple style images')
+args = parser.parse_args()
+
+
+class ImageNetDataset(Dataset):
+    def __init__(self, content_list, style_list, content_tf, style_tf): 
+        self.content_list = content_list
+        self.style_list = style_list
+        self.content_tf = content_tf
+        self.style_tf = style_tf
+    
+    def __len__(self,): 
+        return len(self.content_list)
+    
+    def __getitem__(self, index): 
+        style_path = random.choice(self.style_list)
+        content_path = self.content_list[index]
+        content = self.content_tf(Image.open(str(content_path)).convert("RGB"))
+        style = self.style_tf(Image.open(str(style_path)))
+        if args.preserve_color:
+            style = coral(style, content)
+        return content, style, content_path
 
 
 def test_transform(size, crop):
@@ -45,43 +105,12 @@ def style_transfer(vgg, decoder, content, style, alpha=1.0,
     return decoder(feat)
 
 
-parser = argparse.ArgumentParser()
-# Basic options
-parser.add_argument('--srcdir', type=str, required=True)
-parser.add_argument('--gpuid', type=int, required=True)
-parser.add_argument('--style', type=str, default="../wikiart")
-
-# Additional options
-parser.add_argument('--vgg', type=str, default='models/vgg_normalised.pth')
-parser.add_argument('--decoder', type=str, default='models/decoder.pth')
-parser.add_argument('--content_size', type=int, default=0,
-                    help='New (minimum) size for the content image, \
-                    keeping the original size if set to 0')
-parser.add_argument('--style_size', type=int, default=0,
-                    help='New (minimum) size for the style image, \
-                    keeping the original size if set to 0')
-parser.add_argument('--crop', action='store_true',
-                    help='do center crop to create squared image')
-
-# Advanced options
-parser.add_argument('--preserve_color', action='store_true',
-                    help='If specified, preserve color of the content image')
-parser.add_argument('--alpha', type=float, default=1.0,
-                    help='The weight that controls the degree of \
-                             stylization. Should be between 0 and 1')
-parser.add_argument(
-    '--style_interpolation_weights', type=str, default='',
-    help='The weight for blending the style of multiple style images')
-
-args = parser.parse_args()
-torch.cuda.set_device(int(args.gpuid))
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-
 def main_worker(): 
 
     # set up models 
+    # torch.cuda.set_device(int(args.gpuid))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     decoder = net.decoder
     vgg = net.vgg
     decoder.eval()
@@ -96,55 +125,46 @@ def main_worker():
     content_tf = test_transform(args.content_size, args.crop)
     style_tf = test_transform(args.style_size, args.crop)
 
-    f = open(f"capture_train_GPU{args.gpuid}.txt", "w")
-    content_list = glob.glob(os.path.join(args.srcdir, "*/*"))
-    
+    content_list = glob.glob(os.path.join(args.srcdir, "*"))
     style_list = glob.glob(os.path.join(args.style, "*/*"))
     content_list.sort()
     style_list.sort()
 
-    chunk = math.ceil(len(content_list) / 7)
-    start = max(0, args.gpuid*chunk)
-    end = min((args.gpuid+1)*chunk, len(content_list))
+    gpu_count = 4
+    gpuid = args.gpuid%gpu_count
+    chunk = math.ceil(len(content_list) / gpu_count)
+    start = max(0, gpuid*chunk)
+    end = min((gpuid+1)*chunk, len(content_list))
 
-    for content_path in tqdm(content_list[start:end]):
-        # if do_interpolation:  # one content image, N style image
-        #     style = torch.stack([style_tf(Image.open(str(p))) for p in style_paths])
-        #     content = content_tf(Image.open(str(content_path))) \
-        #         .unsqueeze(0).expand_as(style)
-        #     style = style.to(device)
-        #     content = content.to(device)
-        #     with torch.no_grad():
-        #         output = style_transfer(vgg, decoder, content, style,
-        #                                 args.alpha, interpolation_weights)
-        #     output = output.cpu()
-        #     output_name = output_dir / '{:s}_interpolation{:s}'.format(
-        #         content_path.stem, args.save_ext)
-        #     save_image(output, str(output_name))
+    image_dataset = ImageNetDataset(
+        content_list, style_list, content_tf, style_tf)
+    image_loader = DataLoader(
+        image_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False,
+        num_workers=4, 
+        pin_memory=True)
+
+    f = open(f"capture_train_GPU{args.gpuid}.txt", "w")
+    for content, style, content_paths in tqdm(image_loader):
         try: 
-            style_path = random.choice(style_list)
-            content = content_tf(Image.open(str(content_path)).convert("RGB"))
-            style = style_tf(Image.open(str(style_path)))
-            if args.preserve_color:
-                style = coral(style, content)
-            style = style.to(device).unsqueeze(0)
-            content = content.to(device).unsqueeze(0)
+            style = style.to(device)
+            content = content.to(device)
             with torch.no_grad():
                 output = style_transfer(vgg, decoder, content, style,
                                         args.alpha)
             output = output.cpu()
-
-            output_name = "style_" + content_path
-            os.makedirs(os.path.dirname(output_name), exist_ok=True)
-
-            save_image(output, output_name)
+            
+            for i in range(len(content_paths)): 
+                output_name = f"style{args.alpha}_" + content_paths[i]
+                os.makedirs(os.path.dirname(output_name), exist_ok=True)
+                save_image(output[i:i+1,...], output_name)
         except: 
-            print(f"skip {content_path} ...")
-            f.write(content_path+"\n")
-            f.flush()
+            for i in range(len(content_paths)): 
+                print(f"skip {content_paths[i]} ...")
+                f.write(content_paths[i]+"\n")
+                f.flush()
     f.close()
-
-
 
 
 if __name__ == "__main__": 

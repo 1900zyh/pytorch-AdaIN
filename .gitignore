@@ -11,3 +11,5 @@ experiments/*
 logs/*
 debug*
 *.png
+*.JPEG
+style1.0_imagenet
