@@ -11,7 +11,7 @@ from multiprocessing import Pool
 
 import torch
 import torch.nn as nn
-from PIL import Image, PngImagePlugin
+from PIL import Image, PngImagePlugin, ImageFile
 from torchvision import transforms
 from torchvision.utils import save_image
 from torch.utils.data import Dataset, DataLoader
@@ -22,6 +22,7 @@ from function import adaptive_instance_normalization, coral
 
 # update maximal loading size for extreme high-resolution images
 Image.MAX_IMAGE_PIXELS = 10000000000000000000
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 LARGE_ENOUGH_NUMBER = 100
 PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
 
@@ -136,6 +137,7 @@ def main_worker():
     start = max(0, gpuid*chunk)
     end = min((gpuid+1)*chunk, len(content_list))
 
+    f = open(f"capture_train_{args.gpuid}.txt", "w")
     image_dataset = ImageNetDataset(
         content_list, style_list, content_tf, style_tf)
     image_loader = DataLoader(
@@ -145,7 +147,6 @@ def main_worker():
         num_workers=4, 
         pin_memory=True)
 
-    f = open(f"capture_train_GPU{args.gpuid}.txt", "w")
     for content, style, content_paths in tqdm(image_loader):
         try: 
             style = style.to(device)
